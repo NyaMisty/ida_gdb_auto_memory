@@ -269,14 +269,16 @@ class gdb_auto_memory_plugin_t(idaapi.plugin_t):
         return idaapi.PLUGIN_KEEP
 
     def run(self, arg=0):
-        if not self.g_hooked:
-            debugp("enabling debugger hook")
-            self.g_curHook.hook()
-            self.g_hooked = True
-        else:
-            debugp("disabling debugger hook")
-            self.g_curHook.hook()
-            self.g_hooked = False
+        # if not self.g_hooked:
+        #     debugp("enabling debugger hook")
+        #     self.g_curHook.hook()
+        #     self.g_hooked = True
+        # else:
+        #     debugp("disabling debugger hook")
+        #     self.g_curHook.hook()
+        #     self.g_hooked = False
+        debugp("refreshing memory")
+        self.g_watcher.update()
 
     def term(self):
         self.g_curHook.unhook()
