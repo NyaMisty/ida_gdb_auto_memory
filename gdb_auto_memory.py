@@ -1,6 +1,9 @@
+import sys
 import re
-import idc
 import dataclasses
+
+import idaapi
+import idc
 
 def debugp(*args, **kwargs):
     print('[gdb_auto_memory]', *args, **kwargs)
@@ -41,7 +44,7 @@ class GDB(object):
         return ret
     
     def raw_qXfer(self, cmd): 
-        r = sendGdbRaw(cmd)
+        r = self.sendGdbRaw(cmd)
         if r[0] == 'l':
             return False, r[1:]
         elif r[0] == 'm':
@@ -134,7 +137,7 @@ def getMemInfo(mapsData):
     modMaps = {}
     for _, m in maps.items():
         name = m['name']
-        if not name in modMaps:
+        if name not in modMaps:
             modMaps[name] = []
         modMaps[name].append(m)
     
@@ -150,12 +153,11 @@ def getMemInfo(mapsData):
             for r in regions:
                 yield ('other', buildRegionInfo(r))
 
-import sys
 class GDBMemoryWatcher():
     def __init__(self):
         self._lastData = set()
         self.g = GDB()
-        debugp('Current pid:', self.pid)
+        # debugp('Current pid:', self.pid)
     
     @property
     def pid(self):
@@ -193,7 +195,7 @@ class GDBMemoryWatcher():
             modinfo.name = name
             modinfo.base = base
             modinfo.size = size
-            modinfo.rebase_to = BADADDR
+            modinfo.rebase_to = idaapi.BADADDR
             input_file_path = idaapi.dbg_get_input_path()
             if modinfo.name == input_file_path:
                 modinfo.rebase_to = modinfo.base
@@ -217,6 +219,60 @@ class GDBMemoryWatcher():
             else:
                 mm.push_back(addMemRegion(rr.name, rr.start, rr.end, rr.mode))
         idaapi.set_manual_regions(mm)
+
+class DbgHooks(idaapi.DBG_Hooks):
+    def __init__(self, callback):
+        super(DbgHooks, self).__init__()
+        self.callback = callback
+
+    def hook(self, *args):
+        super(DbgHooks, self).hook(*args)
+
+    def unhook(self, *args):
+        super(DbgHooks, self).unhook(*args)
+
+    def notify(self):
+        self.callback()
+
+    def dbg_suspend_process(self):
+        self.notify()
+
+    def dbg_process_attach(self, pid, tid, ea, name, base, size):
+        self.notify()
+
+PLUGIN_NAME = 'gdb_auto_memory'
+class gdb_auto_memory_plugin_t(idaapi.plugin_t):
+    flags = 0
+    comment = ""
+    help = PLUGIN_NAME
+    wanted_name = PLUGIN_NAME
+    wanted_hotkey = "Ctrl-Alt-G"
+
+    g_watcher = None
+    g_curHook = None
+    g_hooked = False
+    
+    def init(self):
+        debugp("loading plugin...")
+        self.g_watcher = GDBMemoryWatcher()
+        self.g_curHook = DbgHooks(self.g_watcher.update)
+        return idaapi.PLUGIN_KEEP
+
+    def run(self, arg=0):
+        if not self.g_hooked:
+            debugp("enabling debugger hook")
+            self.g_curHook.hook()
+            self.g_hooked = True
+        else:
+            debugp("disabling debugger hook")
+            self.g_curHook.hook()
+            self.g_hooked = False
+
+    def term(self):
+        self.g_curHook.unhook()
+
+def PLUGIN_ENTRY():
+    return gdb_auto_memory_plugin_t()
 
 if __name__ == '__main__':
     w = GDBMemoryWatcher()
