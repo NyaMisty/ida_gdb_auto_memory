@@ -211,14 +211,23 @@ class GDBMemoryWatcher():
             m.perm = (idaapi.SEGPERM_READ if 'r' in mode else 0) | (idaapi.SEGPERM_WRITE if 'w' in mode else 0) | (idaapi.SEGPERM_EXEC if 'x' in mode else 0)
             return m
         
-        mm = idaapi.meminfo_vec_t()
+        # mm = idaapi.meminfo_vec_t()
+        # # base memory
+        # mm.push_back(addMemRegion('MEMORY', 0, idaapi.BADADDR - 1, 'rwxp'))
+        # for typ, rr in diff:
+        #     if typ == 'mod':
+        #         addDbgMod(rr.name, rr.start, rr.end - rr.start)
+        #         debugp('Adding module %s' % rr.name)
+        #     else:
+        #         mm.push_back(addMemRegion(rr.name, rr.start, rr.end, rr.mode))
+        # idaapi.set_manual_regions(mm)
         for typ, rr in diff:
             if typ == 'mod':
                 addDbgMod(rr.name, rr.start, rr.end - rr.start)
                 debugp('Adding module %s' % rr.name)
             else:
-                mm.push_back(addMemRegion(rr.name, rr.start, rr.end, rr.mode))
-        idaapi.set_manual_regions(mm)
+                idaapi.add_segm(0, rr.start, rr.end, rr.name, 'UNK', idaapi.ADDSEG_NOAA)
+        
 
 class DbgHooks(idaapi.DBG_Hooks):
     def __init__(self, callback):
