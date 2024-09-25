@@ -234,8 +234,18 @@ class DbgHooks(idaapi.DBG_Hooks):
     def notify(self):
         self.callback()
 
-    def dbg_suspend_process(self):
-        self.notify()
+    def dbg_suspend_process(self, *args):
+        if len(args) > 0:
+            event : idaapi.debug_event_t = args[0]
+            allowed_flags = idaapi.PROCESS_STARTED \
+                | idaapi.BREAKPOINT \
+                | idaapi.EXCEPTION \
+                | idaapi.LIB_LOADED \
+                | idaapi.LIB_UNLOADED \
+                | idaapi.PROCESS_ATTACHED
+            # we ignored STEP event
+            if event.eid() & allowed_flags:
+                self.notify()
 
     def dbg_process_attach(self, pid, tid, ea, name, base, size):
         self.notify()
