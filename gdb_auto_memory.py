@@ -178,14 +178,14 @@ class GDBMemoryWatcher():
 
     def update(self):
         mapsData = self.g.vFileReadAll('/proc/%d/maps' % self.g.getPid())
-        debugp('Got raw map data:', mapsData)
+        debugp('Current map:\n', mapsData)
         newData = set(repr(c) for c in getMemInfo(mapsData))
         #debugp(newData)
 
         # TODO: handle region unload
         diff = [eval(c) for c in newData - self.lastData]
-        debugp('Last: ', self.lastData)
-        debugp('New: ', newData)
+        # debugp('Last: ', self.lastData)
+        # debugp('New: ', newData)
         debugp('Diff: ', diff)
         self.lastData = newData
 
@@ -243,21 +243,99 @@ class DbgHooks(idaapi.DBG_Hooks):
     def notify(self):
         self.callback()
 
+    
+    # def dbg_process_start(self, *args) -> None:
+    #     self.notify()
+    # # def dbg_process_exit(self, *args) -> None:
+    # #     self.notify()
+    # def dbg_process_attach(self, *args) -> None:
+    #     self.notify()
+    # # def dbg_process_detach(self, *args) -> None:
+    # #     self.notify()
+    # # def dbg_thread_start(self, *args) -> None:
+    # #     self.notify()
+    # # def dbg_thread_exit(self, *args) -> None:
+    # #     self.notify()
+    # def dbg_library_load(self, *args) -> None:
+    #     self.notify()
+    # def dbg_library_unload(self, *args) -> None:
+    #     self.notify()
+    # # def dbg_information(self, *args) -> None:
+    # #     self.notify()
+    # def dbg_exception(self, *args) -> int:
+    #     self.notify()
+    #     return -1
+    # # def dbg_suspend_process(self, *args) -> None:
+    # #     self.notify()
+    # def dbg_bpt(self, *args) -> int:
+    #     self.notify()
+    #     return 0
+    # # def dbg_trace(self, *args) -> int:
+    # #     self.notify()
+    # #     return 0
+    # # def dbg_request_error(self, *args) -> None:
+    # #     self.notify()
+    # # def dbg_step_into(self, *args) -> None:
+    # #     self.notify()
+    # # def dbg_step_over(self, *args) -> None:
+    # #     self.notify()
+    # def dbg_run_to(self, *args) -> None:
+    #     self.notify()
+    # def dbg_step_until_ret(self, *args) -> None:
+    #     self.notify()
+    # # def dbg_bpt_changed(self, *args) -> None:
+    # #     self.notify()
+    # # def dbg_started_loading_bpts(self, *args) -> None:
+    # #     self.notify()
+    # # def dbg_finished_loading_bpts(self, *args) -> None:
+    # #     self.notify()
+
+    last_step_ea = None
     def dbg_suspend_process(self, *args):
         if len(args) > 0:
             event : idaapi.debug_event_t = args[0]
-            allowed_flags = idaapi.PROCESS_STARTED \
-                | idaapi.BREAKPOINT \
-                | idaapi.EXCEPTION \
-                | idaapi.LIB_LOADED \
-                | idaapi.LIB_UNLOADED \
-                | idaapi.PROCESS_ATTACHED
-            # we ignored STEP event
-            if event.eid() & allowed_flags:
-                self.notify()
+        else:
+            event : idaapi.debug_event_t = idaapi.get_debug_event()
+        # debugp('hooked called with %x at %x' % (event.eid(), event.ea))
+        eid = event.eid()
+        if eid & idaapi.STEP:
+            self.last_step_ea = event.ea
+        if eid & idaapi.BREAKPOINT:
+            if self.last_step_ea is not None:
+                if 0 <= abs(event.ea - self.last_step_ea) < 0x1000:
+                    eid = idaapi.STEP # step breakpoint
+        allowed_flags = idaapi.PROCESS_STARTED \
+            | idaapi.BREAKPOINT \
+            | idaapi.EXCEPTION \
+            | idaapi.LIB_LOADED \
+            | idaapi.LIB_UNLOADED \
+            | idaapi.PROCESS_ATTACHED \
+            | idaapi.PROCESS_SUSPENDED
+        # we ignored STEP event
+        if eid & allowed_flags:
+            self.notify()
 
-    def dbg_process_attach(self, pid, tid, ea, name, base, size):
-        self.notify()
+class IDACtxEntry(idaapi.action_handler_t):
+    """
+    A basic Context Menu class to utilize IDA's action handlers.
+    """
+
+    def __init__(self, action_function):
+        idaapi.action_handler_t.__init__(self)
+        self.action_function = action_function
+
+    def activate(self, ctx):
+        """
+        Execute the embedded action_function when this context menu is invoked.
+        """
+        self.action_function()
+        return 1
+
+    def update(self, ctx):
+        """
+        Ensure the context menu is always available in IDA.
+        """
+        return idaapi.AST_ENABLE_ALWAYS
 
 PLUGIN_NAME = 'gdb_auto_memory'
 class gdb_auto_memory_plugin_t(idaapi.plugin_t):
@@ -270,27 +348,85 @@ class gdb_auto_memory_plugin_t(idaapi.plugin_t):
     g_watcher = None
     g_curHook = None
     g_hooked = False
+    g_uiHook = None
+    
+    def node(self):
+        return idaapi.netnode("$ " + PLUGIN_NAME, 0, 1)
     
     def init(self):
         debugp("loading plugin...")
+        self._init_actions()
+        
         self.g_watcher = GDBMemoryWatcher()
         self.g_curHook = DbgHooks(self.g_watcher.update)
+        if self.node().hashval_long("hook_enabled") == 1:
+            debugp("automatically enabling hook")
+            self.hook()
+        
+        class UIHooks(idaapi.UI_Hooks):
+            def ready_to_run(self):
+                """
+                UI ready to run -- an IDA event fired when everything is spunup.
+
+                NOTE: this is a placeholder func, it gets replaced on a live instance
+                but we need it defined here for IDA 7.2+ to properly hook it.
+                """
+                pass
+
+            def finish_populating_widget_popup(self, widget, popup):
+                form_type = idaapi.get_widget_type(widget)
+                if form_type == idaapi.BWN_MODULES:
+                    idaapi.attach_action_to_popup(
+                        widget,
+                        popup,
+                        gdb_auto_memory_plugin_t.ACTION_REFRESH,
+                        "Refresh Module List",
+                        idaapi.SETMENU_APP
+                    )
+                return 0
+        self.g_uiHook = UIHooks()
+        self.g_uiHook.hook()
         return idaapi.PLUGIN_KEEP
 
+    def term(self):
+        self.g_uiHook.unhook()
+        self.g_curHook.unhook()
+        idaapi.unregister_action(self.ACTION_REFRESH)
+    
+    def hook(self):
+        debugp("enabling debugger hook")
+        self.g_curHook.hook()
+        self.g_hooked = True
+    def unhook(self):
+        debugp("disabling debugger hook")
+        self.g_curHook.hook()
+        self.g_hooked = False
+        
     def run(self, arg=0):
-        # if not self.g_hooked:
-        #     debugp("enabling debugger hook")
-        #     self.g_curHook.hook()
-        #     self.g_hooked = True
-        # else:
-        #     debugp("disabling debugger hook")
-        #     self.g_curHook.hook()
-        #     self.g_hooked = False
+        if not self.g_hooked:
+            self.node().hashset_idx("hook_enabled", 1)
+            self.hook()
+        else:
+            self.node().hashset_idx("hook_enabled", 0)
+            self.unhook()
+
+    ACTION_REFRESH = f"{PLUGIN_NAME}:refresh"
+    def trigger(self):
         debugp("refreshing memory")
         self.g_watcher.update()
+    
+    def _init_actions(self):
+        # describe the action
+        action_desc = idaapi.action_desc_t(
+            self.ACTION_REFRESH,                   # The action name.
+            "Force Refresh GDB memory layout",             # The action text.
+            IDACtxEntry(self.trigger),    # The action handler.
+            'Ctrl-Alt-Shift-G',                      # Optional: action shortcut
+            "Force Refresh GDB memory layout",       # Optional: tooltip
+        )
 
-    def term(self):
-        self.g_curHook.unhook()
+        # register the action with IDA
+        assert idaapi.register_action(action_desc), "Action registration failed"
 
 def PLUGIN_ENTRY():
     return gdb_auto_memory_plugin_t()
